@@ -46,8 +46,9 @@ server.post('/participants', async (request, response) => {
         const validation = userSchema.validate(request.body);
 
         if (validation.error) {
-            return response.status(422).send(validation.error.details.map(error => error.message));
+            return response.status(422).send(validation.error.details);
         }
+
         const isReagistered = await db.collection('participants').findOne({ name });
 
         if (isReagistered) {
@@ -81,13 +82,32 @@ server.post('/participants', async (request, response) => {
 });
 
 server.get('/messages', async (request, response) => {
-    const { User } = request.headers;
+    const validated = userSchema.validate({ name: req.header.user });
+
+    if (validated.error) {
+        return response.status(422).send(validated.error.details);
+    }
+
+    const { user } = request.headers;
     const { limit } = request.query;
 
     try {
-        const messages = await db.collection('messages').find({}).toArray();
+        const messages = await db.collection('messages').find({ user }).toArray();
 
-        response.status(200).send(messages);
+        const arrangeMessages = [...messages].reverse();
+
+        const filteredMessages = arrangeMessages.filter((message) =>
+            message.type === "message" ||
+            message.from === user ||
+            message.to === user
+        );
+
+        if (limit) {
+
+            const maxMessages = [...filteredMessages].slice(0, parseInt(limit));
+
+            response.status(200).send(maxMessages);
+        }
 
     } catch (error) {
         console.error(error);
@@ -98,12 +118,19 @@ server.get('/messages', async (request, response) => {
 server.post('/messages', async (request, response) => {
     const { to, text, type } = request.body;
     const { User } = request.headers;
+
     try {
 
         const validation = messagesSchema.validate(request.body);
 
         if (validation.error) {
-            return response.status(422).send(validation.error.details.map(error => error.message));
+            return response.status(422).send(validation.error.details);
+        }
+
+        const isRegistered = await db.collection("participants").findOne({});
+
+        if (!isRegistered) {
+            return response.status(422).send()
         }
 
         const moment = dayjs().locale('pt-br').format('HH:mm:ss');
@@ -124,6 +151,49 @@ server.post('/messages', async (request, response) => {
         response.sendStatus(500);
     }
 });
+
+server.post("/status", async (request, response) => {
+    const { user } = request.headers;
+
+    try {
+        const validParticipant = await db.collection("participants").findOne({ name: user });
+
+        if (!validParticipant || !user) {
+            return response.sendStatus(404);
+        }
+
+        await db.collection("participants").updateOne({ name: user }, { $set: { lastStatus: Date.now() } });
+        response.sendStatus(200);
+
+    } catch (error) {
+        console.error(error);
+        response.sendStatus(500);
+    }
+});
+
+
+async function removeInactive() {
+    const participants = await db.collection("participants").find({}).toArray();
+    const moment = dayjs().locale("pt-br").format("HH:mm:ss");
+
+    participants.forEach(async (participant) => {
+        if (Date.now() - participant.lastStatus > 10000) {
+            await db.collection("messages").insertOne({
+                from: participant.name,
+                to: "Todos",
+                text: "sai da sala...",
+                type: "status",
+                time: moment,
+            });
+
+            await db.collection("participants").deleteOne({
+                _id: new ObjectId(participant._id),
+            });
+        }
+    });
+}
+
+setInterval(removeInactive, 15000);
 
 server.listen(5000, () => {
     console.log("Running at http://localhost:5000")
